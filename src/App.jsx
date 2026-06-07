@@ -402,13 +402,24 @@ function AdminApp() {
 // ════════════════════════════════════════════════════════════
 //  PAGE ÉLÈVE
 // ════════════════════════════════════════════════════════════
+// Clé localStorage propre à l'événement (basée sur le webhook, stable pour un même lien)
+const eventKey = (webhook) => "submitted_" + btoa(webhook).slice(-24);
+
 function StudentApp({ config }) {
   const { titre, webhook, workshops } = config;
 
+  const lsKey = eventKey(webhook);
+
   const [sel,     setSel]     = useState(new Set());
   const [student, setStudent] = useState({ nom:"", classe:"" });
-  const [status,  setStatus]  = useState("idle"); // idle | sending | success | error
+  // Vérifie si cet élève a déjà soumis depuis ce navigateur
+  const [status,  setStatus]  = useState(
+    () => localStorage.getItem(lsKey) ? "success" : "idle"
+  );
   const [errMsg,  setErrMsg]  = useState("");
+  const [prevSub, setPrevSub] = useState(
+    () => { try { return JSON.parse(localStorage.getItem(lsKey)); } catch { return null; } }
+  );
 
   const toggle = (w) => setSel(prev => {
     const n = new Set(prev); n.has(w.id) ? n.delete(w.id) : n.add(w.id); return n;
@@ -444,11 +455,23 @@ function StudentApp({ config }) {
         })),
     };
     try {
-      await fetch(webhook, {
+      const r = await fetch(webhook, {
         method:  "POST",
         headers: { "Content-Type":"application/json" },
         body:    JSON.stringify(payload),
       });
+      if (r.status === 409) {
+        setErrMsg("Une inscription existe déjà pour ce nom et cette classe.");
+        setStatus("error");
+        return;
+      }
+      // Sauvegarde locale pour bloquer une re-soumission accidentelle
+      localStorage.setItem(lsKey, JSON.stringify({
+        nom:    payload.nom,
+        classe: payload.classe,
+        at:     payload.timestamp,
+      }));
+      setPrevSub({ nom: payload.nom, classe: payload.classe, at: payload.timestamp });
       setStatus("success");
     } catch (e) {
       setErrMsg("Erreur réseau. Vérifiez votre connexion et réessayez.");
@@ -457,18 +480,25 @@ function StudentApp({ config }) {
   };
 
   // ── Écran de confirmation ──────────────────────────────
-  if (status === "success") return (
+  if (status === "success") {
+    const isReturn = prevSub && !picked.length;
+    const displayNom    = isReturn ? prevSub.nom    : student.nom;
+    const displayClasse = isReturn ? prevSub.classe : student.classe;
+    return (
     <div style={{ minHeight:"100vh", background:C.bg, fontFamily:FF,
       display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
       <div style={{ background:C.surface, borderRadius:18, padding:"48px 32px",
         maxWidth:440, textAlign:"center", boxShadow:"0 4px 32px rgba(0,0,0,0.09)" }}>
-        <div style={{ fontSize:56, marginBottom:16 }}>✅</div>
+        <div style={{ fontSize:56, marginBottom:16 }}>{isReturn ? "🔒" : "✅"}</div>
         <h1 style={{ fontSize:22, fontWeight:900, color:C.green, margin:"0 0 12px" }}>
-          Inscription envoyée !
+          {isReturn ? "Déjà inscrit(e)" : "Inscription envoyée !"}
         </h1>
         <p style={{ color:C.muted, fontSize:14, lineHeight:1.7, marginBottom:24 }}>
-          <strong style={{ color:C.text }}>{student.nom}</strong> — {student.classe}<br/>
-          Vos <strong>{picked.length} atelier{picked.length>1?"s":""}</strong> ont bien été transmis.
+          <strong style={{ color:C.text }}>{displayNom}</strong> — {displayClasse}<br/>
+          {isReturn
+            ? "Vous avez déjà soumis votre inscription depuis cet appareil."
+            : <>Vos <strong>{picked.length} atelier{picked.length>1?"s":""}</strong> ont bien été transmis.</>
+          }
         </p>
         <div style={{ background:C.light, borderRadius:12, padding:"16px 20px",
           textAlign:"left", marginBottom:24 }}>
@@ -495,6 +525,7 @@ function StudentApp({ config }) {
       </div>
     </div>
   );
+  }
 
   // ── Page principale ────────────────────────────────────
   return (
